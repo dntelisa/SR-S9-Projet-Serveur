@@ -91,6 +91,37 @@ func (g *Game) Start(ticksPerSec int) {
 			g.tick++
 			g.applyCommands()
 			g.broadcastState()
+
+			// Manage end of game
+			if g.SweetsCount() == 0 {
+				// Recover scores 
+				g.mu.Lock()
+				players := make([]map[string]interface{}, 0, len(g.players))
+				for _, p := range g.players {
+					players = append(players, map[string]interface{}{
+						"id":    p.ID,
+						"name":  p.Name,
+						"score": p.Score,
+					})
+				}
+				g.mu.Unlock()
+
+				// Create message JSON for game over
+				msg := map[string]interface{}{
+					"type":   "game_over",
+					"scores": players,
+				}
+				b, _ := json.Marshal(msg)
+
+				// Broadcast game over message
+				select {
+				case g.EventBroadcast <- b:
+				default:
+				}
+
+				// Stop the loop or reset the game here
+				// return 
+			}
 		}
 	}()
 }

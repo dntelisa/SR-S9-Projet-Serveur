@@ -84,6 +84,7 @@ func (hub *Hub) run() {
 	}
 }
 
+// readPump reads messages from the websocket connection.
 func (c *Client) readPump() {
 	defer func() {
 		if c.playerID != "" {
@@ -136,6 +137,7 @@ func (c *Client) readPump() {
 	}
 }
 
+// writePump writes messages from the send channel to the websocket connection.
 func (c *Client) writePump() {
 	for msg := range c.send {
 		err := c.conn.WriteMessage(websocket.TextMessage, msg)
