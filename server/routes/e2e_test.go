@@ -125,7 +125,7 @@ func TestE2E_MultiClientCollect(t *testing.T) {
 // automatically when the server stops and restarts on the same port.
 func TestE2E_ClientReconnect(t *testing.T) {
 	// locate client binary
-	clientPath := filepath.Join("..", "SR-S9-Projet-Client", "build", "srclient")
+	clientPath := filepath.Join("..", "..", "..", "SR-S9-Projet-Client", "build", "srclient")	
 	if _, err := os.Stat(clientPath); err != nil {
 		t.Skipf("client binary not found at %s: %v", clientPath, err)
 	}
@@ -187,6 +187,13 @@ func TestE2E_ClientReconnect(t *testing.T) {
 		t.Fatalf("shutdown server: %v", err)
 	}
 
+	// close all WS connections from the hub side to simulate server going down
+	h.mu.Lock()
+	for c := range h.clients {
+		c.conn.Close()
+	}
+	h.mu.Unlock()
+	
 	// allow client to notice
 	time.Sleep(200 * time.Millisecond)
 
