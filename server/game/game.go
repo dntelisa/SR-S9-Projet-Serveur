@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
-	"sort"
 	"sync"
 	"time"
 )
@@ -142,37 +141,27 @@ PROCESS:
 	if len(cmds) == 0 {
 		return
 	}
-	// group by player and keep last command per player while recording arrival index
-	last := make(map[string]Command)
-	lastIndex := make(map[string]int)
-	for idx, c := range cmds {
-		last[c.PlayerID] = c
-		lastIndex[c.PlayerID] = idx
-	}
-	// create ordered list of players by arrival index of their last command
-	type entry struct{ id string; idx int }
-	entries := make([]entry, 0, len(lastIndex))
-	for id, i := range lastIndex {
-		entries = append(entries, entry{id: id, idx: i})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].idx < entries[j].idx })
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	// build occupancy map of current positions
-	occupied := make(map[[2]int]string)
-	for _, p := range g.players {
-		occupied[[2]int{p.X, p.Y}] = p.ID
-	}
 
-	for _, e := range entries {
-		id := e.id
-		c := last[id]
-		p, ok := g.players[id]
+	// Limit speed: max 2 moves per tick
+	movesCount := make(map[string]int)
+	const MaxMovesPerTick = 2
+
+	// Process commands in order
+	for _, c := range cmds {
+		// Ignore if exceeded move limit
+		if movesCount[c.PlayerID] >= MaxMovesPerTick {
+			continue
+		}
+
+		p, ok := g.players[c.PlayerID]
 		if !ok {
 			continue
 		}
-		// compute desired position
+
+		// Compute new position
 		nx, ny := p.X, p.Y
 		switch c.Type {
 		case "move":
@@ -186,34 +175,37 @@ PROCESS:
 			case "right":
 				nx = min(g.W-1, p.X+1)
 			}
-		case "move_abs":
-			nx = clamp(c.X, 0, g.W-1)
-			ny = clamp(c.Y, 0, g.H-1)
 		}
-		// if desired occupied by someone (who may move too), we only allow move if target not in occupied map or occupied by self
-		if occ, exists := occupied[[2]int{nx, ny}]; exists && occ != p.ID {
-			// conflict — skip move
-			continue
-		}
-		// apply move
-		delete(occupied, [2]int{p.X, p.Y})
-		p.X, p.Y = nx, ny
-		occupied[[2]int{p.X, p.Y}] = p.ID
-		// check sweet
-		for sid, s := range g.sweets {
-			if s.X == p.X && s.Y == p.Y {
-				p.Score++
-				delete(g.sweets, sid)
-				// emit collected event
-				evt := map[string]interface{}{"type": "event", "event": "collected", "player": p.ID, "sweet": sid, "tick": g.tick}
-				if b, err := json.Marshal(evt); err == nil {
-					select {
-					case g.EventBroadcast <- b:
-					default:
-						// drop if nobody consumes or backlog full
-					}
-				}
+
+		// Check for collisions with other players
+		collision := false
+		for _, other := range g.players {
+			if other.ID != p.ID && other.X == nx && other.Y == ny {
+				collision = true
 				break
+			}
+		}
+
+		// If no collision, apply move
+		if !collision {
+			p.X, p.Y = nx, ny
+			movesCount[c.PlayerID]++
+
+			// Check for sweet collection
+			for sid, s := range g.sweets {
+				if s.X == p.X && s.Y == p.Y {
+					p.Score++
+					delete(g.sweets, sid)
+					// broadcast event
+					evt := map[string]interface{}{"type": "event", "event": "collected", "player": p.ID, "sweet": sid, "tick": g.tick}
+					if b, err := json.Marshal(evt); err == nil {
+						select {
+						case g.EventBroadcast <- b:
+						default:
+						}
+					}
+					break
+				}
 			}
 		}
 	}
