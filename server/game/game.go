@@ -118,6 +118,8 @@ func (g *Game) Start(ticksPerSec int) {
 				default:
 				}
 
+				time.Sleep(5 * time.Second)
+				g.Restart()
 				// Stop the loop or reset the game here
 				// return 
 			}
@@ -273,6 +275,36 @@ func (g *Game) AddPlayer(name string) *Player {
 		}
 	}
 	return nil
+}
+
+// Restart resets the game state for a new round.
+func (g *Game) Restart() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	// Reset Scores
+	for _, p := range g.players {
+		p.Score = 0
+	}
+
+	// Regen Sweets (20 sweets)
+	g.sweets = make(map[string]*Sweet)
+	for i := 0; i < 20; i++ {
+		x := g.rand.Intn(g.W)
+		y := g.rand.Intn(g.H)
+		id := fmt.Sprintf("s%d", i+1)
+		g.sweets[id] = &Sweet{ID: id, X: x, Y: y}
+	}
+
+	// Clear pending commands
+LOOP:
+	for {
+		select {
+		case <-g.commands:
+		default:
+			break LOOP
+		}
+	}
 }
 
 // Testing helpers (exported) -------------------------------------------------
