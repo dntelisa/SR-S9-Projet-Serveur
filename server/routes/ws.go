@@ -23,10 +23,10 @@ type Client struct {
 
 // Hub maintains the set of active clients and broadcasts messages to them.
 type Hub struct {
-	clients    map[*Client]bool
-	broadcast  chan []byte
-	register   chan *Client
-	unregister chan *Client
+	clients    map[*Client]bool // list of connected clients
+	broadcast  chan []byte // messages to broadcast to all clients
+	register   chan *Client // queue for registering new clients
+	unregister chan *Client // queue for unregistering clients
 	mu         sync.Mutex
 }
 
@@ -53,14 +53,17 @@ func init() {
 	}()
 }
 
+// Manage the hub: register/unregister clients and broadcast messages.
 func (hub *Hub) run() {
 	for {
 		select {
+		// New client registration, add his connection
 		case c := <-hub.register:
 			hub.mu.Lock()
 			hub.clients[c] = true
 			hub.mu.Unlock()
 			log.Println("[WS] client registered")
+		// Client unregistration, delete his connection
 		case c := <-hub.unregister:
 			hub.mu.Lock()
 			if _, ok := hub.clients[c]; ok {
@@ -69,6 +72,7 @@ func (hub *Hub) run() {
 			}
 			hub.mu.Unlock()
 			log.Println("[WS] client unregistered")
+		// Broadcast message to all clients
 		case msg := <-hub.broadcast:
 			hub.mu.Lock()
 			for c := range hub.clients {
@@ -102,6 +106,7 @@ func (c *Client) readPump() {
 		log.Println("[WS] recv:", string(message))
 		// parse JSON message
 		var m map[string]interface{}
+		// decode json
 		if err := json.Unmarshal(message, &m); err != nil {
 			log.Println("[WS] invalid json:", err)
 			continue
