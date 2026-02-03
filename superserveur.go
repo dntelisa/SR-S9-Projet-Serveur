@@ -11,6 +11,7 @@ import (
 var addr = flag.String("addr", "localhost:8080", "http service address")
 
 func main() {
+	flag.Parse()
 	log.Println("[INFO] SUPERSERVEUR")
 	log.Println("[INFO] Waiting for requests...")
 	server.SetupRoutes()
