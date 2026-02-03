@@ -43,21 +43,21 @@ type StateMessage struct {
 
 // Game contains the game state and control channels.
 type Game struct {
-	W, H int
-	mu   sync.Mutex
+	W, H int // map size
+	mu   sync.Mutex // protects below to avoid data races
 	// state
-	players map[string]*Player
-	sweets  map[string]*Sweet
+	players map[string]*Player // key: player ID, value: pointer to Player
+	sweets  map[string]*Sweet // key: sweet ID, value: pointer to Sweet
 	// control
-	commands chan Command
+	commands chan Command // incoming commands from players in parallel
 	// broadcast state bytes
-	StateBroadcast chan []byte
+	StateBroadcast chan []byte // chanel for broadcasting state, it's the output
 	// broadcast event bytes (e.g., collected)
-	EventBroadcast chan []byte
+	EventBroadcast chan []byte // ponctual events like game over, sweet collected, player joined, etc.
 	// tick counter
-	tick int64
+	tick int64 // if client receive packet in the wrong order, it will know how to handle it
 	// random
-	rand *rand.Rand
+	rand *rand.Rand // for random positions
 }
 
 // NewGame creates a new game and initializes sweets.
@@ -67,35 +67,39 @@ func NewGame(w, h, nSweets int) *Game {
 		H:              h,
 		players:        make(map[string]*Player),
 		sweets:         make(map[string]*Sweet),
-		commands:       make(chan Command, 1024),
-		StateBroadcast: make(chan []byte, 10),
-		EventBroadcast: make(chan []byte, 10),
-		rand:           rand.New(rand.NewSource(time.Now().UnixNano())),
+		commands:       make(chan Command, 1024), // buffered channel for commands, to avoid blocking, it's like a big queue
+		StateBroadcast: make(chan []byte, 10), // buffered channel for state broadcasts, like a small queue because state is frequent
+		EventBroadcast: make(chan []byte, 10), // buffered channel for event broadcasts
+		rand:           rand.New(rand.NewSource(time.Now().UnixNano())), // initialize random source
 	}
 	for i := 0; i < nSweets; i++ {
-		x := g.rand.Intn(w)
+		x := g.rand.Intn(w) 
 		y := g.rand.Intn(h)
-		id := fmt.Sprintf("s%d", i+1)
-		g.sweets[id] = &Sweet{ID: id, X: x, Y: y}
+		id := fmt.Sprintf("s%d", i+1) // give an unique id
+		g.sweets[id] = &Sweet{ID: id, X: x, Y: y} // place sweet at random position
 	}
-	return g
+	return g // return pointer to game, adress in memory of the game struct
 }
 
 // Start the game loop at ticksPerSec.
 func (g *Game) Start(ticksPerSec int) {
+	// goroutine for game loop, thread that runs concurrently
+	// the main program listen http connexion (new players), without this goroutine the game state would not update
 	go func() {
-		ticker := time.NewTicker(time.Second / time.Duration(ticksPerSec))
-		defer ticker.Stop()
+		ticker := time.NewTicker(time.Second / time.Duration(ticksPerSec)) // ticker to trigger ticks at regular intervals
+		defer ticker.Stop() // clean up ticker when goroutine ends
+		// main game loop, runs at each tick
+		// Ensure that game runs at constant speed regardless of processing time
 		for range ticker.C {
-			g.tick++
-			g.applyCommands()
-			g.broadcastState()
+			g.tick++ // increment tick counter
+			g.applyCommands() // process all queued commands (Input)
+			g.broadcastState() // broadcast current state to all clients (Output)
 
-			// Manage end of game
+			// Manage end of game, check at each tick if party is over
 			if g.SweetsCount() == 0 {
 				// Recover scores 
-				g.mu.Lock()
-				players := make([]map[string]interface{}, 0, len(g.players))
+				g.mu.Lock() // Lock to read player scores safely (no problem if a player disconnects at this moment)
+				players := make([]map[string]interface{}, 0, len(g.players)) // prepare scores slice
 				for _, p := range g.players {
 					players = append(players, map[string]interface{}{
 						"id":    p.ID,
@@ -110,33 +114,33 @@ func (g *Game) Start(ticksPerSec int) {
 					"type":   "game_over",
 					"scores": players,
 				}
-				b, _ := json.Marshal(msg)
+				b, _ := json.Marshal(msg) // serialize to JSON
 
 				// Broadcast game over message
 				select {
 				case g.EventBroadcast <- b:
-				default:
+				default: // drop if network is saturated or nobody is listening
 				}
 
+				// Restart game after a delay
 				time.Sleep(5 * time.Second)
 				g.Restart()
-				// Stop the loop or reset the game here
-				// return 
 			}
 		}
 	}()
 }
 
 // applyCommands processes queued commands deterministically.
+// Authorize or not the moves based on collisions and limits speed.
 func (g *Game) applyCommands() {
 	// collect commands
 	cmds := make([]Command, 0)
 	for {
 		select {
-		case c := <-g.commands:
-			cmds = append(cmds, c)
+		case c := <-g.commands: // while there are commands in the channel, store them in temporary cmds slice
+			cmds = append(cmds, c) // list to treat all commands at once, it's for a tick
 		default:
-			goto PROCESS
+			goto PROCESS // exit loop when no more commands
 		}
 	}
 PROCESS:
@@ -144,8 +148,9 @@ PROCESS:
 		return
 	}
 
+	// process commands, nobody else can modify game state during this
 	g.mu.Lock()
-	defer g.mu.Unlock()
+	defer g.mu.Unlock() 
 
 	// Limit speed: max 2 moves per tick
 	movesCount := make(map[string]int)
@@ -214,19 +219,25 @@ PROCESS:
 }
 
 func (g *Game) broadcastState() {
+	// Block other modifications while reading state
 	g.mu.Lock()
 	players := make([]*Player, 0, len(g.players))
 	for _, p := range g.players {
+		// Create a copy of the player
 		players = append(players, &Player{ID: p.ID, Name: p.Name, X: p.X, Y: p.Y, Score: p.Score})
 	}
 	sweets := make([]*Sweet, 0, len(g.sweets))
 	for _, s := range g.sweets {
+		// Create a copy of the sweet
 		sweets = append(sweets, &Sweet{ID: s.ID, X: s.X, Y: s.Y})
 	}
+	// Unlock before marshaling to avoid holding lock too long
 	g.mu.Unlock()
 
 	msg := StateMessage{Type: "state", Tick: g.tick, Players: players, Sweets: sweets}
 	b, _ := json.Marshal(msg)
+
+	// Sending no blocking to avoid slowing down the game loop
 	select {
 	case g.StateBroadcast <- b:
 	default:
@@ -236,10 +247,11 @@ func (g *Game) broadcastState() {
 
 // AddPlayer adds a player at a random free position and returns id and pointer to player.
 func (g *Game) AddPlayer(name string) *Player {
+	// Lock to avoid players appear at the same position
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	id := fmt.Sprintf("p-%d", len(g.players)+1)
-	// find free spot
+	// find free spot 
 	for i := 0; i < 1000; i++ {
 		x := g.rand.Intn(g.W)
 		y := g.rand.Intn(g.H)
@@ -257,6 +269,7 @@ func (g *Game) AddPlayer(name string) *Player {
 		}
 	}
 	// fallback: find first free in grid
+	// for the case of a nearly full grid and previous method does not find a spot
 	for y := 0; y < g.H; y++ {
 		for x := 0; x < g.W; x++ {
 			free := true
@@ -274,6 +287,7 @@ func (g *Game) AddPlayer(name string) *Player {
 			}
 		}
 	}
+	// no space left
 	return nil
 }
 
@@ -376,5 +390,5 @@ func clamp(v, a, b int) int { if v < a { return a }; if v > b { return b }; retu
 var Default = NewGame(10, 10, 20)
 
 func init() {
-	Default.Start(10)
+	Default.Start(20)
 }
